@@ -46,7 +46,7 @@
  * Debugging macros, with names beginning "dbg_" are allowed.
  * You may not define any other macros having arguments.
  */
-// #define DEBUG // uncomment this line to enable debugging
+ #define DEBUG // uncomment this line to enable debugging
 
 #ifdef DEBUG
 /* When debugging is enabled, these form aliases to useful functions */
@@ -316,9 +316,41 @@ static block_t *extend_heap(size_t size)
 /*
  * <what does coalesce do?>
  */
-static block_t *coalesce(block_t * block) 
+static block_t *coalesce(block_t *block) 
 {
-    // fill me in
+    bool prev_alloc = extract_alloc(*find_prev_footer(block));
+    bool next_alloc = get_alloc(find_next(block));
+    size_t size = get_size(block);
+
+    if (prev_alloc && next_alloc) {                 // Case 1
+        // Both previous and next blocks are allocated
+        // No coalescing possible
+        return block;
+    }
+
+    else if (prev_alloc && !next_alloc) {           // Case 2
+        // Next block is free
+        size += get_size(find_next(block));
+        write_header(block, size, false);
+        write_footer(block, size, false);
+    }
+
+    else if (!prev_alloc && next_alloc) {           // Case 3
+        // Previous block is free
+        block = find_prev(block);
+        size += get_size(block);
+        write_header(block, size, false);
+        write_footer(block, size, false);
+    }
+
+    else {                                          // Case 4
+        // Both previous and next blocks are free
+        size += get_size(find_next(block)) + get_size(find_prev(block));
+        block = find_prev(block);
+        write_header(block, size, false);
+        write_footer(block, size, false);
+    }
+
     return block;
 }
 
@@ -372,10 +404,55 @@ static block_t *find_fit(size_t asize)
  */
 bool mm_checkheap(int line)  
 { 
-    (void)line; // delete this line; it's a placeholder so that the compiler
-                // will not warn you about an unused variable.
+    block_t *current = heap_start;
+
+    // Check if the heap has been initialized
+    if (current == NULL) {
+        dbg_printf("Heap is not initialized.\n");
+        return false;
+    }
+
+    // Iterate through each block in the heap
+    while (get_size(current) > 0) {
+        // Check alignment of each block
+        if (((size_t)header_to_payload(current) % dsize) != 0) {
+            dbg_printf("Error: Block not aligned at line %d\n", line);
+            return false;
+        }
+
+        // Check if each block's size meets the minimum block size requirement
+        if (get_size(current) < min_block_size) {
+            dbg_printf("Error: Block size is less than minimum at line %d\n", line);
+            return false;
+        }
+
+        // For free blocks, check if headers and footers match
+        if (!get_alloc(current)) {
+            word_t *footerp = (word_t *)((current->payload) + get_size(current) - dsize);
+            if (current->header != *footerp) {
+                dbg_printf("Error: Header and footer do not match at line %d\n", line);
+                return false;
+            }
+        }
+
+        // Check for contiguous free blocks that have not been coalesced
+        if (!get_alloc(current) && !get_alloc(find_next(current))) {
+            dbg_printf("Error: Contiguous free blocks not coalesced at line %d\n", line);
+            return false;
+        }
+
+        current = find_next(current);
+    }
+
+    // Check the final block for correctness
+    if (!get_alloc(current) || get_size(current) != 0) {
+        dbg_printf("Error: Final block is not correct at line %d\n", line);
+        return false;
+    }
+
     return true;
 }
+
 
 /*
  * max: returns x if x > y, and y otherwise.
