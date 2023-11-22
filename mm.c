@@ -46,7 +46,7 @@
  * Debugging macros, with names beginning "dbg_" are allowed.
  * You may not define any other macros having arguments.
  */
- #define DEBUG // uncomment this line to enable debugging
+//#define DEBUG // uncomment this line to enable debugging
 
 #ifdef DEBUG
 /* When debugging is enabled, these form aliases to useful functions */
@@ -72,26 +72,25 @@ static const size_t chunksize = (1 << 12);    // requires (chunksize % 16 == 0)
 static const word_t alloc_mask = 0x1;
 static const word_t size_mask = ~(word_t)0xF;
 
-typedef struct block
-{
-    /* Header contains size + allocation flag */
+typedef struct block {
     word_t header;
-    /*
-     * We don't know how big the payload will be.  Declaring it as an
-     * array of size 0 allows computing its starting address using
-     * pointer notation.
-     */
+    union{
+        struct{
+            struct block *next_free;  // Pointer to next_free free block
+            struct block *prev_free;
+        };
+      // Pointer to previous free block
     char payload[0];
-    /*
-     * We can't declare the footer as part of the struct, since its starting
-     * position is unknown
-     */
+    };          // Flexible array member for the payload
 } block_t;
+
 
 
 /* Global variables */
 /* Pointer to first block */
 static block_t *heap_start = NULL;
+static block_t *free_list_head = NULL; // Pointer to the first block in the free list
+//static block_t *free_list_tail = NULL; // Pointer to the last block in the free list
 
 bool mm_checkheap(int lineno);
 
@@ -101,6 +100,8 @@ static void place(block_t *block, size_t asize);
 static block_t *find_fit(size_t asize);
 static block_t *coalesce(block_t *block);
 
+static void add_to_free_list(block_t *block); //added for modularity
+static void remove_from_free_list(block_t *block);
 static size_t max(size_t x, size_t y);
 static size_t round_up(size_t size, size_t n);
 static word_t pack(size_t size, bool alloc);
@@ -121,8 +122,6 @@ static void *header_to_payload(block_t *block);
 static block_t *find_next(block_t *block);
 static word_t *find_prev_footer(block_t *block);
 static block_t *find_prev(block_t *block);
-
-
 /*
  * <what does mm_init do?>
  */
@@ -130,28 +129,36 @@ bool mm_init(void)
 {
     // Create the initial empty heap 
     word_t *start = (word_t *)(mem_sbrk(2*wsize));
-
+    dbg_printf("Heap start: %p\n", start);
     if (start == (void *)-1) 
     {
         return false;
     }
-
-    start[0] = pack(0, true); // Prologue footer
-    start[1] = pack(0, true); // Epilogue header
-    // Heap starts with first "block header", currently the epilogue footer
+    start[0] = pack(0, true); // 
+    start[1] = pack(0, true); // 
     heap_start = (block_t *) &(start[1]);
+    free_list_head = NULL;
 
     // Extend the empty heap with a free block of chunksize bytes
-    if (extend_heap(chunksize) == NULL)
+    block_t *initial_block = extend_heap(chunksize);
+    dbg_printf("Initial block: %p, Size: %zu\n", initial_block, get_size(initial_block));
+    if (initial_block == NULL)
     {
         return false;
     }
+    
+    // Check heap consistency
+    dbg_printf("Checking heap after init...\n");
+    dbg_requires(mm_checkheap(__LINE__));
+    dbg_printf("Heap initialized succesfully\n");
     return true;
 }
+
 
 /*
  * <what does mmalloc do?>
  */
+ // CHECKED
 void *malloc(size_t size) 
 {
     dbg_requires(mm_checkheap(__LINE__));
@@ -160,13 +167,11 @@ void *malloc(size_t size)
     block_t *block;
     void *bp = NULL;
 
-    if (heap_start == NULL) // Initialize heap if it isn't initialized
-    {
+    if (heap_start == NULL) { // Initialize heap if it isn't initialized
         mm_init();
     }
 
-    if (size == 0) // Ignore spurious request
-    {
+    if (size == 0) { // Ignore this request
         dbg_ensures(mm_checkheap(__LINE__));
         return bp;
     }
@@ -178,31 +183,66 @@ void *malloc(size_t size)
     block = find_fit(asize);
 
     // If no fit is found, request more memory, and then and place the block
-    if (block == NULL)
-    {  
+    if (block == NULL) {  
         extendsize = max(asize, chunksize);
         block = extend_heap(extendsize);
-        if (block == NULL) // extend_heap returns an error
-        {
+        if (block == NULL) { // extend_heap returns an error
             return bp;
         }
-
     }
-
+    dbg_printf("Place: block address = %p, payload address = %p, size = %zu\n", 
+        (void*)block, header_to_payload(block), asize);
     place(block, asize);
+    
     bp = header_to_payload(block);
-
-    dbg_ensures(mm_checkheap(__LINE__));
+    dbg_printf("Malloc: block address = %p, payload address = %p, size = %zu\n", 
+        (void*)block, bp, asize);
+    dbg_requires(mm_checkheap(__LINE__));
     return bp;
 } 
 
+//DIDN'T-CHECK!
+static void remove_from_free_list(block_t *block) {
+       
+    // if the free block list is empty
+    if (free_list_head == NULL) {
+        block->next_free = NULL;
+        block->prev_free = NULL;
+        return;
+    }
+
+    // if the block first in list
+    else if (free_list_head == block) {
+        //if the only block in list
+        if (block->next_free == NULL) {
+            free_list_head = NULL;
+        }
+        // set next_free block to start of freelist
+        else {
+            free_list_head = block->next_free;
+            free_list_head->prev_free = NULL;
+        }
+    }
+ 
+    // if block is at end of list 
+    else if (block->next_free == NULL) {
+        block->prev_free->next_free = NULL;
+    }
+    //for arbitrary spot in list
+    else {
+        block->next_free->prev_free = block->prev_free;
+        block->prev_free->next_free = block->next_free;
+    }
+
+    block->next_free = NULL;
+    block->prev_free = NULL;
+}
 /*
  * <what does free do?>
  */
 void free(void *bp)
 {
-    if (bp == NULL)
-    {
+    if (bp == NULL) {
         return;
     }
 
@@ -211,10 +251,9 @@ void free(void *bp)
 
     write_header(block, size, false);
     write_footer(block, size, false);
-
     coalesce(block);
-
 }
+
 
 /*
  * <what does realloc do?>
@@ -313,71 +352,110 @@ static block_t *extend_heap(size_t size)
     return coalesce(block);
 }
 
+
+//DIDN'T CHECK
+// Helper function to add a block to the free list
+static void add_to_free_list(block_t *block) {
+       // if free block list is not empty, 
+    if (free_list_head != NULL) {
+        block->next_free = free_list_head;
+        block->prev_free = NULL;
+        free_list_head->prev_free = block;
+        free_list_head = block;
+    }
+
+    // if there is nothing in the free block list, this will be the start
+    else{
+        free_list_head = block;
+        block->prev_free = NULL;
+        block->next_free = NULL;        
+    }
+}
+
+
 /*
  * <what does coalesce do?>
  */
-static block_t *coalesce(block_t *block) 
+static block_t *coalesce(block_t * block) 
 {
-    bool prev_alloc = extract_alloc(*find_prev_footer(block));
-    bool next_alloc = get_alloc(find_next(block));
+
+    bool prev_alloc = get_alloc(find_prev(block)); 
+    bool next_alloc = get_alloc(find_next(block)); 
     size_t size = get_size(block);
-
-    if (prev_alloc && next_alloc) {                 // Case 1
-        // Both previous and next blocks are allocated
-        // No coalescing possible
-        return block;
+      // Print the allocation status of the neighboring blocks
+    dbg_printf("Coalesce: Current Block %p, Prev Alloc: %d, Next Alloc: %d\n", (void*)block, prev_alloc, next_alloc);
+    
+    if (find_prev(block) == block){// Case 1-generic
+        prev_alloc = true;
     }
 
-    else if (prev_alloc && !next_alloc) {           // Case 2
-        // Next block is free
-        size += get_size(find_next(block));
+    
+
+    
+    if (prev_alloc && !next_alloc) {// Case 2
+        dbg_printf("Coalesce: Case 2 - Coalescing with next_free block\n");
+        size = get_size(block) + get_size(find_next(block));
+        remove_from_free_list(find_next(block));
         write_header(block, size, false);
         write_footer(block, size, false);
     }
 
-    else if (!prev_alloc && next_alloc) {           // Case 3
-        // Previous block is free
+    
+    if (!prev_alloc && next_alloc) { // Case 3
+        dbg_printf("Coalesce: Case 3 - Coalescing with prev_free block\n");
+        size = get_size(block) + get_size(find_prev(block));
+        remove_from_free_list(find_prev(block));
+        write_header(find_prev(block), size, false);
+        write_footer(find_prev(block), size, false);
         block = find_prev(block);
-        size += get_size(block);
-        write_header(block, size, false);
-        write_footer(block, size, false);
     }
 
-    else {                                          // Case 4
-        // Both previous and next blocks are free
-        size += get_size(find_next(block)) + get_size(find_prev(block));
+    // Case 4 is if both adj blocks free
+    if (!prev_alloc && !next_alloc) { // Case 4
+        dbg_printf("Coalesce: Case 4 - Coalescing with both prev_free and next_free blocks\n");
+        remove_from_free_list(find_prev(block));
+        remove_from_free_list(find_next(block));
+        size = size + get_size(find_next(block)) + get_size(find_prev(block));
+        write_header(find_prev(block), size, false);
+        write_footer(find_prev(block), size, false);
         block = find_prev(block);
-        write_header(block, size, false);
-        write_footer(block, size, false);
     }
-
+    add_to_free_list(block);
     return block;
 }
+
+
 
 /*
  * <what does place do?>
  */
-static void place(block_t *block, size_t asize)
-{
-    size_t csize = get_size(block);
+static void place(block_t *block, size_t asize) {
+    dbg_assert(!get_alloc(block)); // Ensure the block is not already allocated
 
-    if ((csize - asize) >= min_block_size)
-    {
-        block_t *block_next;
+    size_t csize = get_size(block);
+    remove_from_free_list(block);
+    if ((csize - asize) >= min_block_size) {
         write_header(block, asize, true);
         write_footer(block, asize, true);
 
-        block_next = find_next(block);
-        write_header(block_next, csize-asize, false);
-        write_footer(block_next, csize-asize, false);
-    }
+        block_t *block_next = find_next(block);
+        size_t remaining_size = csize - asize;
 
-    else
-    { 
+        
+
+        write_header(block_next, remaining_size, false);
+        write_footer(block_next, remaining_size, false);
+
+        coalesce(block_next);
+
+    } else {
         write_header(block, csize, true);
         write_footer(block, csize, true);
     }
 }
+
+
+
 
 /*
  * <what does find_fit do?>
@@ -385,18 +463,17 @@ static void place(block_t *block, size_t asize)
 static block_t *find_fit(size_t asize)
 {
     block_t *block;
-
-    for (block = heap_start; get_size(block) > 0;
-                             block = find_next(block))
+    
+    for (block = free_list_head; block != NULL; block = block->next_free)
     {
-
-        if (!(get_alloc(block)) && (asize <= get_size(block)))
+        if (!(get_alloc(block))&&(asize<=get_size(block)))
         {
             return block;
         }
     }
-    return NULL; // no fit found
+    return NULL; // No fit found
 }
+
 
 /* 
  * <what does your heap checker do?>
@@ -405,16 +482,18 @@ static block_t *find_fit(size_t asize)
 bool mm_checkheap(int line)  
 { 
     block_t *current = heap_start;
-
     // Check if the heap has been initialized
     if (current == NULL) {
         dbg_printf("Heap is not initialized.\n");
         return false;
     }
-
-    // Iterate through each block in the heap
+    while(get_size(current)==0)
+    {
+        current = find_next(current);
+    }
     while (get_size(current) > 0) {
         // Check alignment of each block
+        dbg_printf("checkHeap: Payload is at line %d, address: %p\n", line, header_to_payload(current));
         if (((size_t)header_to_payload(current) % dsize) != 0) {
             dbg_printf("Error: Block not aligned at line %d\n", line);
             return false;
@@ -449,7 +528,8 @@ bool mm_checkheap(int line)
         dbg_printf("Error: Final block is not correct at line %d\n", line);
         return false;
     }
-
+    dbg_printf("check-heap passed\n");
+    (void) line;
     return true;
 }
 
@@ -463,7 +543,7 @@ static size_t max(size_t x, size_t y)
 }
 
 /*
- * round_up: Rounds size up to next multiple of n
+ * round_up: Rounds size up to next_free multiple of n
  */
 static size_t round_up(size_t size, size_t n)
 {
@@ -549,7 +629,7 @@ static void write_footer(block_t *block, size_t size, bool alloc)
 
 
 /*
- * find_next: returns the next consecutive block on the heap by adding the
+ * find_next: returns the next_free consecutive block on the heap by adding the
  *            size of the block.
  */
 static block_t *find_next(block_t *block)
