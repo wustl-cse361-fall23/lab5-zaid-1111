@@ -380,6 +380,7 @@ static block_t *coalesce(block_t * block)
 {
 
     bool prev_alloc = get_alloc(find_prev(block)); 
+    
     bool next_alloc = get_alloc(find_next(block)); 
     size_t size = get_size(block);
       // Print the allocation status of the neighboring blocks
@@ -395,9 +396,13 @@ static block_t *coalesce(block_t * block)
     if (prev_alloc && !next_alloc) {// Case 2
         dbg_printf("Coalesce: Case 2 - Coalescing with next_free block\n");
         size = get_size(block) + get_size(find_next(block));
+
         remove_from_free_list(find_next(block));
+
         write_header(block, size, false);
+
         write_footer(block, size, false);
+
     }
 
     
@@ -405,8 +410,11 @@ static block_t *coalesce(block_t * block)
         dbg_printf("Coalesce: Case 3 - Coalescing with prev_free block\n");
         size = get_size(block) + get_size(find_prev(block));
         remove_from_free_list(find_prev(block));
+
         write_header(find_prev(block), size, false);
+
         write_footer(find_prev(block), size, false);
+
         block = find_prev(block);
     }
 
@@ -414,10 +422,15 @@ static block_t *coalesce(block_t * block)
     if (!prev_alloc && !next_alloc) { // Case 4
         dbg_printf("Coalesce: Case 4 - Coalescing with both prev_free and next_free blocks\n");
         remove_from_free_list(find_prev(block));
+
         remove_from_free_list(find_next(block));
+
         size = size + get_size(find_next(block)) + get_size(find_prev(block));
+
         write_header(find_prev(block), size, false);
+
         write_footer(find_prev(block), size, false);
+
         block = find_prev(block);
     }
     add_to_free_list(block);
@@ -438,11 +451,10 @@ static void place(block_t *block, size_t asize) {
         write_header(block, asize, true);
         write_footer(block, asize, true);
 
+
         block_t *block_next = find_next(block);
+
         size_t remaining_size = csize - asize;
-
-        
-
         write_header(block_next, remaining_size, false);
         write_footer(block_next, remaining_size, false);
 
@@ -450,6 +462,7 @@ static void place(block_t *block, size_t asize) {
 
     } else {
         write_header(block, csize, true);
+
         write_footer(block, csize, true);
     }
 }
