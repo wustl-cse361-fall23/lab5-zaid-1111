@@ -71,7 +71,7 @@ static const size_t chunksize = (1 << 12);    // requires (chunksize % 16 == 0)
 
 static const word_t alloc_mask = 0x1;
 static const word_t size_mask = ~(word_t)0xF;
-
+//static int N = 15;
 typedef struct block {
     word_t header;
     union{
@@ -467,26 +467,96 @@ static void place(block_t *block, size_t asize) {
     }
 }
 
-
-
-
 /*
  * <what does find_fit do?>
  */
+/*
+ * find_fit - Find a fit for a block with asize bytes in the free list
+ */
+ //BEST FIT STRAT
+/*
+ * find_fit - Find a fit for a block with asize bytes in the free list
+ */
+
+ //Best fit strategy
+static block_t *find_fit(size_t asize)
+{
+    block_t *best_fit = NULL;
+    size_t min_size_diff = SIZE_MAX; // Initialize to the maximum possible size difference
+
+    // Declare block outside the for loop for compatibility with non-C99 standards
+    block_t *block;
+    for (block = free_list_head; block != NULL; block = block->next_free) {
+        size_t block_size = get_size(block);
+
+        // Check if block is free and large enough to hold asize
+        if (!get_alloc(block) && asize <= block_size) {
+            size_t size_diff = block_size - asize;
+
+            // Check if this block is a better fit
+            if (size_diff < min_size_diff) {
+                best_fit = block;
+                min_size_diff = size_diff;
+
+                // Perfect fit found, no need to search further
+                if (size_diff == 0) {
+                    break;
+                }
+            }
+        }
+    }
+
+    return best_fit; // Could be NULL if no suitable block was found
+}
+
+/*
+ * find_fit - Find the Nth fit for a block with asize bytes in the free list
+ *            Fallback to first-fit or best-fit if Nth fit fails
+ */
+ /*
 static block_t *find_fit(size_t asize)
 {
     block_t *block;
+    int count = 0;  // Count of suitable blocks encountered
+
+    // First try Nth fit
+    for (block = free_list_head; block != NULL; block = block->next_free) {
+        if (!get_alloc(block) && asize <= get_size(block)) {
+            count++;
+            if (count == N) {
+                return block; // Return the Nth suitable block
+            }
+        }
+    }
+
+    // Fallback to first-fit or best-fit if Nth fit fails
+
+    // First-fit fallback
     
-    for (block = free_list_head; block != NULL; block = block->next_free)
-    {
-        if (!(get_alloc(block))&&(asize<=get_size(block)))
-        {
+    for (block = free_list_head; block != NULL; block = block->next_free) {
+        if (!get_alloc(block) && asize <= get_size(block)) {
             return block;
         }
     }
-    return NULL; // No fit found
-}
+    
 
+    // Best-fit fallback
+    
+    block_t *best_fit = NULL;
+    size_t min_size_diff = SIZE_MAX;
+    for (block = free_list_head; block != NULL; block = block->next_free) {
+        if (!get_alloc(block) && asize <= get_size(block)) {
+            size_t size_diff = get_size(block) - asize;
+            if (size_diff < min_size_diff) {
+                best_fit = block;
+                min_size_diff = size_diff;
+            }
+        }
+    }
+    return best_fit; // Could be NULL if no suitable block was found
+ return block;
+}
+*/
 
 /* 
  * <what does your heap checker do?>
