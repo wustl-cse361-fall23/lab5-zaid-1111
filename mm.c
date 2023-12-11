@@ -61,6 +61,7 @@
 #define dbg_assert(...)
 #define dbg_ensures(...)
 #endif
+#define NUM_FREE_LISTS 10
 
 /* Basic constants */
 typedef uint64_t word_t;
@@ -71,7 +72,6 @@ static const size_t chunksize = (1 << 12);    // requires (chunksize % 16 == 0)
 
 static const word_t alloc_mask = 0x1;
 static const word_t size_mask = ~(word_t)0xF;
-//static int N = 15;
 typedef struct block {
     word_t header;
     union{
@@ -88,13 +88,16 @@ typedef struct block {
 
 /* Global variables */
 /* Pointer to first block */
+static block_t *free_list_heads[NUM_FREE_LISTS];
 static block_t *heap_start = NULL;
-static block_t *free_list_head = NULL; // Pointer to the first block in the free list
+//static block_t *free_list_head = NULL; // Pointer to the first block in the free list
 //static block_t *free_list_tail = NULL; // Pointer to the last block in the free list
 
 bool mm_checkheap(int lineno);
 
 /* Function prototypes for internal helper routines */
+static int get_free_list_index(size_t size);
+
 static block_t *extend_heap(size_t size);
 static void place(block_t *block, size_t asize);
 static block_t *find_fit(size_t asize);
@@ -127,30 +130,34 @@ static block_t *find_prev(block_t *block);
  */
 bool mm_init(void) 
 {
+    // Initialize all segregated free list heads to NULL
+    int i;
+    for (i = 0; i < NUM_FREE_LISTS; i++) {
+        free_list_heads[i] = NULL;
+    }
+
     // Create the initial empty heap 
-    word_t *start = (word_t *)(mem_sbrk(2*wsize));
+    word_t *start = (word_t *)(mem_sbrk(2 * wsize));
     dbg_printf("Heap start: %p\n", start);
-    if (start == (void *)-1) 
-    {
+    if (start == (void *)-1) {
         return false;
     }
-    start[0] = pack(0, true); // 
-    start[1] = pack(0, true); // 
+
+    start[0] = pack(0, true); // Prologue header
+    start[1] = pack(0, true); // Prologue footer
     heap_start = (block_t *) &(start[1]);
-    free_list_head = NULL;
 
     // Extend the empty heap with a free block of chunksize bytes
     block_t *initial_block = extend_heap(chunksize);
     dbg_printf("Initial block: %p, Size: %zu\n", initial_block, get_size(initial_block));
-    if (initial_block == NULL)
-    {
+    if (initial_block == NULL) {
         return false;
     }
-    
+
     // Check heap consistency
     dbg_printf("Checking heap after init...\n");
     dbg_requires(mm_checkheap(__LINE__));
-    dbg_printf("Heap initialized succesfully\n");
+    dbg_printf("Heap initialized successfully\n");
     return true;
 }
 
@@ -203,40 +210,26 @@ void *malloc(size_t size)
 
 //DIDN'T-CHECK!
 static void remove_from_free_list(block_t *block) {
-       
-    // if the free block list is empty
-    if (free_list_head == NULL) {
-        block->next_free = NULL;
-        block->prev_free = NULL;
-        return;
-    }
+    size_t size = get_size(block);
+    int index = get_free_list_index(size);  // Use the same function to find the correct list
 
-    // if the block first in list
-    else if (free_list_head == block) {
-        //if the only block in list
-        if (block->next_free == NULL) {
-            free_list_head = NULL;
-        }
-        // set next_free block to start of freelist
-        else {
-            free_list_head = block->next_free;
-            free_list_head->prev_free = NULL;
-        }
-    }
- 
-    // if block is at end of list 
-    else if (block->next_free == NULL) {
-        block->prev_free->next_free = NULL;
-    }
-    //for arbitrary spot in list
-    else {
-        block->next_free->prev_free = block->prev_free;
+    // If the block is the first in the list
+    if (block->prev_free == NULL) {
+        free_list_heads[index] = block->next_free;
+    } else {
         block->prev_free->next_free = block->next_free;
     }
 
+    // If the block is not the last in the list
+    if (block->next_free != NULL) {
+        block->next_free->prev_free = block->prev_free;
+    }
+
+    // Clear the next_free and prev_free pointers of the block
     block->next_free = NULL;
     block->prev_free = NULL;
 }
+
 /*
  * <what does free do?>
  */
@@ -356,21 +349,22 @@ static block_t *extend_heap(size_t size)
 //DIDN'T CHECK
 // Helper function to add a block to the free list
 static void add_to_free_list(block_t *block) {
-       // if free block list is not empty, 
-    if (free_list_head != NULL) {
-        block->next_free = free_list_head;
-        block->prev_free = NULL;
-        free_list_head->prev_free = block;
-        free_list_head = block;
+    size_t size = get_size(block);
+    int index = get_free_list_index(size);  // Use the previously defined function to get the correct free list index
+
+    // Insert block at the start of the appropriate free list
+    block->next_free = free_list_heads[index];
+    block->prev_free = NULL;
+
+    // Update the next block's prev_free if the list is not empty
+    if (free_list_heads[index] != NULL) {
+        free_list_heads[index]->prev_free = block;
     }
 
-    // if there is nothing in the free block list, this will be the start
-    else{
-        free_list_head = block;
-        block->prev_free = NULL;
-        block->next_free = NULL;        
-    }
+    // Set the new head of the free list
+    free_list_heads[index] = block;
 }
+
 
 
 /*
@@ -477,86 +471,45 @@ static void place(block_t *block, size_t asize) {
 /*
  * find_fit - Find a fit for a block with asize bytes in the free list
  */
+// Nth Fit Strategy with segregated free lists
 
- //Best fit strategy
-static block_t *find_fit(size_t asize)
-{
+static block_t *find_fit(size_t asize) {
     block_t *best_fit = NULL;
-    size_t min_size_diff = SIZE_MAX; // Initialize to the maximum possible size difference
+    size_t min_size_diff = SIZE_MAX;
+    int search_iterations = 0;
+    const int max_iterations = 12;  // Define a limit for search iterations
 
-    // Declare block outside the for loop for compatibility with non-C99 standards
-    block_t *block;
-    for (block = free_list_head; block != NULL; block = block->next_free) {
-        size_t block_size = get_size(block);
+    int start_index = get_free_list_index(asize);
+    int i;
+    for (i = start_index; i < NUM_FREE_LISTS; i++) {
+        block_t *block;
+        for (block = free_list_heads[i]; block != NULL; block = block->next_free) {
+            // Check if the block is free and large enough
+            if (!get_alloc(block) && asize <= get_size(block)) {
+                size_t size_diff = get_size(block) - asize;
 
-        // Check if block is free and large enough to hold asize
-        if (!get_alloc(block) && asize <= block_size) {
-            size_t size_diff = block_size - asize;
+                // Update best fit if this block is a better fit
+                if (size_diff < min_size_diff) {
+                    best_fit = block;
+                    min_size_diff = size_diff;
+                }
 
-            // Check if this block is a better fit
-            if (size_diff < min_size_diff) {
-                best_fit = block;
-                min_size_diff = size_diff;
-
-                // Perfect fit found, no need to search further
-                if (size_diff == 0) {
-                    break;
+                // If the search has gone on for too long, return the current block if it's good enough
+                if (++search_iterations >= max_iterations) {
+                    if (best_fit != NULL) {
+                        return best_fit;
+                    }
+                    // If we haven't found any fit yet, return this block
+                    if (asize <= get_size(block)) {
+                        return block;
+                    }
                 }
             }
         }
     }
-
-    return best_fit; // Could be NULL if no suitable block was found
+    return best_fit; // Return the best fit found, or NULL if none found
 }
 
-/*
- * find_fit - Find the Nth fit for a block with asize bytes in the free list
- *            Fallback to first-fit or best-fit if Nth fit fails
- */
- /*
-static block_t *find_fit(size_t asize)
-{
-    block_t *block;
-    int count = 0;  // Count of suitable blocks encountered
-
-    // First try Nth fit
-    for (block = free_list_head; block != NULL; block = block->next_free) {
-        if (!get_alloc(block) && asize <= get_size(block)) {
-            count++;
-            if (count == N) {
-                return block; // Return the Nth suitable block
-            }
-        }
-    }
-
-    // Fallback to first-fit or best-fit if Nth fit fails
-
-    // First-fit fallback
-    
-    for (block = free_list_head; block != NULL; block = block->next_free) {
-        if (!get_alloc(block) && asize <= get_size(block)) {
-            return block;
-        }
-    }
-    
-
-    // Best-fit fallback
-    
-    block_t *best_fit = NULL;
-    size_t min_size_diff = SIZE_MAX;
-    for (block = free_list_head; block != NULL; block = block->next_free) {
-        if (!get_alloc(block) && asize <= get_size(block)) {
-            size_t size_diff = get_size(block) - asize;
-            if (size_diff < min_size_diff) {
-                best_fit = block;
-                min_size_diff = size_diff;
-            }
-        }
-    }
-    return best_fit; // Could be NULL if no suitable block was found
- return block;
-}
-*/
 
 /* 
  * <what does your heap checker do?>
@@ -614,6 +567,24 @@ bool mm_checkheap(int line)
     dbg_printf("check-heap passed\n");
     (void) line;
     return true;
+}
+
+
+
+static int get_free_list_index(size_t size) {
+    if (size <= 64) return 0;
+    else if (size <= 128) return 1;
+    else if (size <= 256) return 2;
+    else if (size <= 512) return 3;
+    else {
+        int index = 4;
+        size_t current_size = 1024;
+        while (size > current_size && index < (NUM_FREE_LISTS - 1)) {
+            current_size *= 2;
+            index++;
+        }
+        return index;
+    }
 }
 
 
