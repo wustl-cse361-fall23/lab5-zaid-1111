@@ -90,8 +90,6 @@ typedef struct block {
 /* Pointer to first block */
 static block_t *free_list_heads[NUM_FREE_LISTS];
 static block_t *heap_start = NULL;
-//static block_t *free_list_head = NULL; // Pointer to the first block in the free list
-//static block_t *free_list_tail = NULL; // Pointer to the last block in the free list
 
 bool mm_checkheap(int lineno);
 
@@ -345,7 +343,6 @@ static block_t *extend_heap(size_t size)
     return coalesce(block);
 }
 
-
 //DIDN'T CHECK
 // Helper function to add a block to the free list
 static void add_to_free_list(block_t *block) {
@@ -364,111 +361,61 @@ static void add_to_free_list(block_t *block) {
     // Set the new head of the free list
     free_list_heads[index] = block;
 }
-
-
-
 /*
  * <what does coalesce do?>
  */
-static block_t *coalesce(block_t * block) 
-{
-
-    bool prev_alloc = get_alloc(find_prev(block)); 
-    
-    bool next_alloc = get_alloc(find_next(block)); 
+static block_t *coalesce(block_t *block) {
+    block_t *prev_block = find_prev(block);
+    block_t *next_block = find_next(block);
+    bool prev_alloc = get_alloc(prev_block) || prev_block == block; // Check if previous block is allocated or if it is the same as the current block (at the start of the heap)
+    bool next_alloc = get_alloc(next_block); // Check if next block is allocated
     size_t size = get_size(block);
-      // Print the allocation status of the neighboring blocks
-    dbg_printf("Coalesce: Current Block %p, Prev Alloc: %d, Next Alloc: %d\n", (void*)block, prev_alloc, next_alloc);
-    
-    if (find_prev(block) == block){// Case 1-generic
-        prev_alloc = true;
+
+    if (prev_alloc && next_alloc) {  // Case 1: No coalescing
+        add_to_free_list(block);
+        return block;
     }
 
-    
-
-    
-    if (prev_alloc && !next_alloc) {// Case 2
-        dbg_printf("Coalesce: Case 2 - Coalescing with next_free block\n");
-        size = get_size(block) + get_size(find_next(block));
-
-        remove_from_free_list(find_next(block));
-
-        write_header(block, size, false);
-
-        write_footer(block, size, false);
-
+    if (!prev_alloc) {  // Coalesce with previous block
+        size += get_size(prev_block);
+        remove_from_free_list(prev_block);
+        block = prev_block;
     }
 
-    
-    if (!prev_alloc && next_alloc) { // Case 3
-        dbg_printf("Coalesce: Case 3 - Coalescing with prev_free block\n");
-        size = get_size(block) + get_size(find_prev(block));
-        remove_from_free_list(find_prev(block));
-
-        write_header(find_prev(block), size, false);
-
-        write_footer(find_prev(block), size, false);
-
-        block = find_prev(block);
+    if (!next_alloc) {  // Coalesce with next block
+        size += get_size(next_block);
+        remove_from_free_list(next_block);
     }
 
-    // Case 4 is if both adj blocks free
-    if (!prev_alloc && !next_alloc) { // Case 4
-        dbg_printf("Coalesce: Case 4 - Coalescing with both prev_free and next_free blocks\n");
-        remove_from_free_list(find_prev(block));
-
-        remove_from_free_list(find_next(block));
-
-        size = size + get_size(find_next(block)) + get_size(find_prev(block));
-
-        write_header(find_prev(block), size, false);
-
-        write_footer(find_prev(block), size, false);
-
-        block = find_prev(block);
-    }
+    write_header(block, size, false);
+    write_footer(block, size, false);
     add_to_free_list(block);
+
     return block;
 }
-
-
-
 /*
  * <what does place do?>
  */
 static void place(block_t *block, size_t asize) {
-    dbg_assert(!get_alloc(block)); // Ensure the block is not already allocated
-
     size_t csize = get_size(block);
-    remove_from_free_list(block);
-    if ((csize - asize) >= min_block_size) {
+
+    remove_from_free_list(block);  // Remove block from its current free list
+
+    if ((csize - asize) >= min_block_size) {  // Split the block
         write_header(block, asize, true);
         write_footer(block, asize, true);
-
-
         block_t *block_next = find_next(block);
-
         size_t remaining_size = csize - asize;
         write_header(block_next, remaining_size, false);
         write_footer(block_next, remaining_size, false);
-
-        coalesce(block_next);
-
-    } else {
+        add_to_free_list(block_next);  // Add the remaining part to the free list
+    } else {  // Don't split
         write_header(block, csize, true);
-
         write_footer(block, csize, true);
     }
 }
-
 /*
  * <what does find_fit do?>
- */
-/*
- * find_fit - Find a fit for a block with asize bytes in the free list
- */
- //BEST FIT STRAT
-/*
  * find_fit - Find a fit for a block with asize bytes in the free list
  */
 // Nth Fit Strategy with segregated free lists
