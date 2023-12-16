@@ -1,0 +1,10 @@
+Grader: Nick Cochran
+Code Style Grade: 5/10
+Code Style Comments: 
+Lines over 80 characters:       13
+	-2 for lines over 80 chars
+	-1 for no file header comment
+	-2 for very few function comments
+Heapchecker Grade: 6/10
+Heapcheck Comments: 
+	-4 for no checks for the free list
