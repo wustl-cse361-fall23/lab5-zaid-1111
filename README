@@ -1,8 +1,4 @@
-#############################
-# CS:APP Malloc Lab
-# Handout files for students
-#############################
-
+Implemented a memory allocator based on explicit free list and coalesce functionality. It is optimized to decrease fragmentation while keeping throughput relatively decent!
 ***********
 Main Files:
 ***********
